@@ -19,8 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY train_model.py .
 
+# Copy application files
+COPY process_data.py .
+
 # Copy model if it exists (optional)
-COPY vipertrace.keras* ./
+COPY vipertrace.pth* ./
 
 # Expose port
 EXPOSE 8000

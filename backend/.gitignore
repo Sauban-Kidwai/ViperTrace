@@ -8,9 +8,10 @@ venv/
 env/
 ENV/
 .venv
-*.keras
-*.h5
+*.pth
+*.pt
 *.pkl
+*.npz
 .pytest_cache/
 .coverage
 htmlcov/

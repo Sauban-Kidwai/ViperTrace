@@ -14,10 +14,9 @@ import {
 import axios from "axios";
 
 interface ThreatDetection {
-  filename: string;
+  offset: number;
   confidence: number;
   threat_type: string;
-  chunks_analyzed: number;
   entropy_score: number;
 }
 
@@ -99,7 +98,10 @@ export default function Home() {
             }% confidence)`
           );
           addLog(
-            `>   └─ Entropy: ${threat.entropy_score} | Chunks: ${threat.chunks_analyzed}`
+            `>   └─ Offset: 0x${threat.offset
+              .toString(16)
+              .toUpperCase()
+              .padStart(4, "0")} | Entropy: ${threat.entropy_score}`
           );
         });
         addLog(`> Total scan time: ${response.data.scan_time}s`);
@@ -275,8 +277,12 @@ export default function Home() {
                           </span>
                         </div>
                         <div className="text-green-700">
-                          Entropy: {threat.entropy_score} | Chunks:{" "}
-                          {threat.chunks_analyzed}
+                          Offset: 0x
+                          {threat.offset
+                            .toString(16)
+                            .toUpperCase()
+                            .padStart(4, "0")}{" "}
+                          | Entropy: {threat.entropy_score}
                         </div>
                       </div>
                     ))}

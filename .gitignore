@@ -1,8 +1,9 @@
 # ViperTrace
 /backend/venv/
 /backend/__pycache__/
-/backend/*.keras
-/backend/*.h5
+/backend/*.pth
+/backend/*.pt
+/backend/*.npz
 /frontend/node_modules/
 /frontend/.next/
 /frontend/out/

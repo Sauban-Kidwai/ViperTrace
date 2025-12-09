@@ -2,9 +2,9 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import numpy as np
-import tensorflow as tf
+import torch
+import torch.nn as nn
 from typing import List
-import io
 import math
 import os
 
@@ -19,22 +19,100 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variable to store the model
+
+class ViperNet(nn.Module):
+    """
+    Dual-input CNN architecture for malware detection
+    
+    Inputs:
+        - x_bytes: (batch_size, 512) - Normalized byte sequences
+        - x_entropy: (batch_size, 1) - Shannon entropy values
+    
+    Output:
+        - (batch_size, 1) - Malware probability [0-1]
+    """
+    
+    def __init__(self, chunk_size: int = 512):
+        super(ViperNet, self).__init__()
+        
+        # 1D CNN for byte sequence processing
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
+        
+        self.pool = nn.MaxPool1d(kernel_size=2)
+        self.dropout_conv = nn.Dropout(0.3)
+        
+        # Calculate flattened size after convolutions
+        # After 3 pooling layers: 512 -> 256 -> 128 -> 64
+        self.cnn_output_size = 128 * (chunk_size // 8)
+        
+        # Fully connected layers (CNN output + entropy)
+        self.fc1 = nn.Linear(self.cnn_output_size + 1, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 1)
+        
+        self.dropout_fc = nn.Dropout(0.4)
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+    
+    def forward(self, x_bytes, x_entropy):
+        """
+        Forward pass with dual inputs
+        
+        Args:
+            x_bytes: (batch_size, 512) - Byte sequences
+            x_entropy: (batch_size, 1) - Entropy values
+        
+        Returns:
+            (batch_size, 1) - Malware probability
+        """
+        # Reshape for 1D CNN: (batch, channels=1, sequence_length=512)
+        x = x_bytes.unsqueeze(1)
+        
+        # Convolutional layers
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.dropout_conv(x)
+        
+        x = self.pool(self.relu(self.conv2(x)))
+        x = self.dropout_conv(x)
+        
+        x = self.pool(self.relu(self.conv3(x)))
+        x = self.dropout_conv(x)
+        
+        # Flatten CNN output
+        x = x.view(x.size(0), -1)
+        
+        # Concatenate with entropy
+        x = torch.cat([x, x_entropy], dim=1)
+        
+        # Fully connected layers
+        x = self.dropout_fc(self.relu(self.fc1(x)))
+        x = self.dropout_fc(self.relu(self.fc2(x)))
+        x = self.sigmoid(self.fc3(x))
+        
+        return x
+
+
+# Global variables
 model = None
-MODEL_PATH = "vipertrace.keras"
+device = None
+MODEL_PATH = "vipertrace.pth"
+
 
 class ThreatDetection(BaseModel):
-    filename: str
+    offset: int
     confidence: float
     threat_type: str
-    chunks_analyzed: int
     entropy_score: float
+
 
 class ScanResponse(BaseModel):
     status: str
     threats: List[ThreatDetection]
     total_chunks: int
     scan_time: float
+
 
 def calculate_entropy(data: bytes) -> float:
     """Calculate Shannon entropy of byte data"""
@@ -56,6 +134,7 @@ def calculate_entropy(data: bytes) -> float:
             entropy -= probability * math.log2(probability)
     
     return entropy
+
 
 def process_file_chunks(file_bytes: bytes, chunk_size: int = 512):
     """Process file in chunks and extract features"""
@@ -81,20 +160,30 @@ def process_file_chunks(file_bytes: bytes, chunk_size: int = 512):
     
     return chunks, entropies
 
+
 @app.on_event("startup")
 async def load_model():
-    """Load the Keras model on startup"""
-    global model
+    """Load the PyTorch model on startup"""
+    global model, device
+    
+    # Set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     try:
         if os.path.exists(MODEL_PATH):
-            model = tf.keras.models.load_model(MODEL_PATH)
+            model = ViperNet(chunk_size=512)
+            model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+            model.to(device)
+            model.eval()  # Set to evaluation mode
             print(f"✓ Model loaded successfully from {MODEL_PATH}")
+            print(f"✓ Using device: {device}")
         else:
             print(f"⚠ Warning: Model file {MODEL_PATH} not found. Using mock predictions.")
             model = None
     except Exception as e:
         print(f"⚠ Error loading model: {e}. Using mock predictions.")
         model = None
+
 
 @app.get("/")
 async def root():
@@ -105,6 +194,7 @@ async def root():
         "model_loaded": model is not None
     }
 
+
 @app.post("/scan", response_model=ScanResponse)
 async def scan_file(file: UploadFile = File(...)):
     """
@@ -112,7 +202,7 @@ async def scan_file(file: UploadFile = File(...)):
     
     - Accepts any file type
     - Processes in 512-byte chunks
-    - Returns threats with confidence > 85%
+    - Returns threats with confidence > 85% (offset + confidence score)
     """
     import time
     start_time = time.time()
@@ -132,30 +222,37 @@ async def scan_file(file: UploadFile = File(...)):
         threats = []
         
         if model is not None:
-            # Real model prediction
-            chunks_array = np.array(chunks)
-            # Reshape for CNN: (batch_size, 512, 1) for 1D CNN
-            chunks_array = chunks_array.reshape(-1, 512, 1)
+            # Real model prediction with PyTorch
+            model.eval()
             
-            # Get predictions
-            predictions = model.predict(chunks_array, verbose=0)
+            with torch.no_grad():
+                # Convert to tensors
+                chunks_tensor = torch.FloatTensor(np.array(chunks)).to(device)
+                entropies_tensor = torch.FloatTensor(entropies).reshape(-1, 1).to(device)
+                
+                # Get predictions
+                predictions = model(chunks_tensor, entropies_tensor)
+                predictions = predictions.cpu().numpy()
             
             # Analyze predictions
             for idx, (pred, entropy) in enumerate(zip(predictions, entropies)):
                 confidence = float(pred[0]) * 100  # Convert to percentage
                 
                 if confidence > 85.0:
+                    # Determine threat type based on entropy
                     threat_type = "Malware Detected"
                     if entropy > 7.5:
                         threat_type = "Encrypted Malware"
                     elif entropy < 3.0:
                         threat_type = "Suspicious Pattern"
                     
+                    # Calculate byte offset
+                    offset = idx * 512
+                    
                     threats.append(ThreatDetection(
-                        filename=file.filename,
+                        offset=offset,
                         confidence=round(confidence, 2),
                         threat_type=threat_type,
-                        chunks_analyzed=idx + 1,
                         entropy_score=round(entropy, 3)
                     ))
         else:
@@ -168,10 +265,9 @@ async def scan_file(file: UploadFile = File(...)):
                 threat_type = "Encrypted Malware" if avg_entropy > 7.0 else "Suspicious Pattern"
                 
                 threats.append(ThreatDetection(
-                    filename=file.filename,
+                    offset=0,
                     confidence=round(mock_confidence, 2),
                     threat_type=threat_type,
-                    chunks_analyzed=total_chunks,
                     entropy_score=round(avg_entropy, 3)
                 ))
         
@@ -187,6 +283,7 @@ async def scan_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
 
+
 @app.get("/health")
 async def health_check():
     """Detailed health check"""
@@ -196,6 +293,7 @@ async def health_check():
         "model_path": MODEL_PATH,
         "version": "1.0.0"
     }
+
 
 if __name__ == "__main__":
     import uvicorn
