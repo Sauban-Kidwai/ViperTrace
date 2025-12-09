@@ -1,0 +1,20 @@
+# ViperTrace - Python Backend
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.keras
+*.h5
+*.pkl
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data
+/data/*
+!data/.gitkeep
