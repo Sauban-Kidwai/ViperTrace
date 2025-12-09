@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ViperTrace 🐍🔍
 
 Advanced AI-powered malware detection system using deep learning.
@@ -160,3 +161,6 @@ MIT
 ## ⚠️ Disclaimer
 
 This is a demonstration project. For production use with real malware detection, train the model on legitimate malware datasets and implement additional security measures.
+=======
+# ViperTrace
+>>>>>>> 0446424e5f63b404ab22ced49778ac76a60f7991
